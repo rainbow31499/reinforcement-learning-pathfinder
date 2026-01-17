@@ -1,19 +1,14 @@
-import matplotlib.pyplot as plt
 import numpy as np
 from geom_functions import *
 
 
-def brownian_motion_obstacle_course(start_point,
-                                    timestep,
-                                    time_limit,
-                                    obstacles,
-                                    exits,
-                                    x_mesh,
-                                    y_mesh,
-                                    drift,
-                                    diffusion=1,
-                                    speed_limit=np.inf,
-                                    rolling_speed_period=1):
+def brownian_motion_obstacle_course(
+        # Environmental parameters:
+        obstacles, exits, x_mesh, y_mesh,
+        # Time parameters:
+        time_limit, timestep,
+        # Motion parameters:
+        start_point, drift, diffusion=1, speed_limit=np.inf, rolling_speed_period=1):
     """Simulate a 2D Brownian motion obstacle course in a maze given a set of `obstacles` from a `start_point`, to see if trajectory crosses `exits` within `time_limit`. Run the simulation by stepping times by `timestep`, according to a defined `drift` function that operates bilinearly on a grid defined by `x_mesh` and `y_mesh`, and a diffusion constant for the Brownian motion element. If `speed_limit` is set, only allow paths that lie within speed limit according to a `rolling_speed_period` indicating number of steps over which to average speed measurements."""
 
     success = False
@@ -63,6 +58,8 @@ def brownian_motion_obstacle_course(start_point,
 
 
 """
+import matplotlib.pyplot as plt
+
 obstacles = [np.array([[-4, -4, 5, 5, 1, 1, -1, -1, 5, 5, 12, 12, 10, 10, 7, 7, -6, -6],
                       [-8, 4, 4, -5, -5, 1, 1, -7, -7, -11, -11, 4, 4, -9, -9, 6, 6, -8]])]
 exits = [np.array([[-4, -6], [-8, -8]])]

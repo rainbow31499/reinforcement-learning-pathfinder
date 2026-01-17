@@ -3,11 +3,21 @@ import datetime
 from brownian_motion_obstacle_course import brownian_motion_obstacle_course
 
 
-def train_next_generation(  # Simulation parameters:
-        obstacles, exits, drift_function, x_mesh, y_mesh, start_point, time_limit, timestep, diffusion, speed_limit, rolling_speed_period, simulations, print_progress,
-        # Training parameters:
-        memory_retention, running_period, collision_penalty):
-    """Train a Brownian motion by running simulations to collect training data from a given number of `simulations`, """
+def train_next_generation(
+        # Simulation parameters:
+        # Environmental parameters:
+        obstacles, exits, x_mesh, y_mesh,
+        # Time parameters:
+        time_limit, timestep, simulations,
+        # Motion parameters:
+        start_point, drift_function, diffusion=1, speed_limit=np.inf, rolling_speed_period=1,
+        # Drift function training parameters:
+        # mode: `'time'` gives running averages over time, `'steps'` gives running averages over steps
+        memory_retention=0.8, running_period=1, running_mode="time",
+        collision_penalty=0,
+        # UI settings:
+        print_progress=True):
+    """Train a Brownian motion by running simulations from an initial set of simulation parameters fed into the `brownian_motion_obstacle_course` function to collect training data from a given number of `simulations`. Training parameters include `memory_retention` to show what percentage of previous drift function is retained. Parameter `running_period` describes smoothing of trajectories in training data used to average over this period to train drift functions. Collisions penalized by `collision_penalty` parameter to introduce dividing (1 + `collision_penalty` * `number_of_collisions`) from orginal training score."""
     # Step 1: Run simulations to collect training data
 
     generation = drift_function['generation']
@@ -18,16 +28,11 @@ def train_next_generation(  # Simulation parameters:
         if print_progress:
             print('Running iteration {} of {}...'.format(i + 1, simulations))
 
-        data_point = brownian_motion_obstacle_course(start_point=start_point,
-                                                     timestep=timestep,
-                                                     time_limit=time_limit,
-                                                     obstacles=obstacles,
-                                                     exits=exits,
-                                                     x_mesh=x_mesh, y_mesh=y_mesh,
-                                                     drift=drift_function['drift_value'],
-                                                     diffusion=diffusion,
-                                                     speed_limit=speed_limit,
-                                                     rolling_speed_period=rolling_speed_period)
+        data_point = brownian_motion_obstacle_course(obstacles=obstacles, exits=exits, x_mesh=x_mesh, y_mesh=y_mesh,
+                                                     time_limit=time_limit, timestep=timestep,
+                                                     start_point=start_point, drift=drift_function[
+                                                         'drift_value'], diffusion=diffusion,
+                                                     speed_limit=speed_limit, rolling_speed_period=rolling_speed_period)
 
         data_point['generation'] = generation
 
@@ -45,11 +50,16 @@ def train_next_generation(  # Simulation parameters:
             weight = 1 / data_point['time_taken'] / \
                 (1 + collision_penalty * data_point['collisions'])
 
+        if running_mode == 'time':
+            running_steps = int(np.ceil(running_period / timestep))
+        elif running_mode == 'steps':
+            running_steps = running_period
+
         for i in range(data_point['path'].shape[1] - 1):
             start = data_point['path'][:, i]
-            if i + running_period < data_point['path'].shape[1]:
-                end = data_point['path'][:, i + running_period]
-                steps = running_period
+            if i + running_steps < data_point['path'].shape[1]:
+                end = data_point['path'][:, i + running_steps]
+                steps = running_steps
             else:
                 end = data_point['path'][:, -1]
                 steps = data_point['path'].shape[1] - 1 - i
@@ -87,45 +97,50 @@ def train_maze_simulation(
         # Environmental parameters:
         obstacles, exits, x_mesh, y_mesh,
         # Time parameters:
-        time_limit, steps=1000, min_step_size=1,
+        time_limit=1000, steps=1000, max_step_size=1,
         # Motion parameters:
-        start_point=np.array([0, 0]), diffusion=1, speed_limit=3, rolling_speed_period=20,
-        # Training parameters:
-        memory_retention=0.8, running_time=1, collision_penalty=0,
-        # Target goal, stop when achieved:
-        target_time=100, target_success_rate=0.95,
+        start_point=np.array([0, 0]), drift_function=None, diffusion=1, speed_limit=np.inf, rolling_speed_period=1,
+        # Drift function training parameters:
+        # mode: `'time'` gives running averages over time, `'steps'` gives running averages over steps
+        memory_retention=0.8, running_period=1, running_mode='time',
+        collision_penalty=0,
+        # Generation training parameters:
+        # Target goal (stop when achieved):
+        target_time=100, target_success_rate=0.9,
         # Adjustment parameters:
         new_time_fraction=0.7, level_up_success_rate=0.95, level_down_success_rate=0.3, level_down_time_multiplier=1.2,
         # Training limits:
-        training_iterations=100, training_time_limit=3600, simulations=100,
+        training_generations=100, training_time_limit=3600, simulations=100,
+        # UI Settings:
         print_progress=True):
-    """Implement the full training process for a single obstacle course with initial parameters."""
+    """Implement the full training process for a single obstacle course with initial parameters. Run a given number of `simulations` up to a number of `training_generations`, until all generations are used or `training_time_limit` (in seconds) is reached. Goal is to achieve a `target_success_rate` of all trajectories under a `target_time`, at which training stops. In training, monitor success rates of current training generation: if `level_up_success_rate` of all trajectories fall within current time limit, level up to reduce time limit according to `new_time_fraction` quartile. If less than `level_down_success_rate` of trajectories fall within time limit, level down by multiplying time limit by `level_down_time_multiplier`. Other parameters are same as in `train_next_generation` function. UPCOMING: Data also includes a log of events."""
 
     # Initialize data
     drift_functions = []
     training_data = []
 
     # First drift function
-    drift_totals_zero = np.zeros((len(x_mesh), len(y_mesh), 2))
-    drift_weights_zero = np.zeros((len(x_mesh), len(y_mesh)))
-    drift_zero = np.zeros((len(x_mesh), len(y_mesh), 2))
+    if drift_function == None:
+        drift_totals_zero = np.zeros((len(x_mesh), len(y_mesh), 2))
+        drift_weights_zero = np.zeros((len(x_mesh), len(y_mesh)))
+        drift_zero = np.zeros((len(x_mesh), len(y_mesh), 2))
 
-    drift_function = {'totals': drift_totals_zero,
-                      'weights': drift_weights_zero,
-                      'drift_value': drift_zero,
-                      'x_mesh': x_mesh,
-                      'y_mesh': y_mesh,
-                      'generation': 0,
-                      'timestamp': datetime.datetime.now().strftime('%Y%m%d_%H%M%S'),
-                      'obstacles': obstacles,
-                      'exits': exits
-                      }
+        drift_function = {'totals': drift_totals_zero,
+                          'weights': drift_weights_zero,
+                          'drift_value': drift_zero,
+                          'x_mesh': x_mesh,
+                          'y_mesh': y_mesh,
+                          'generation': 0,
+                          'timestamp': datetime.datetime.now().strftime('%Y%m%d_%H%M%S'),
+                          'obstacles': obstacles,
+                          'exits': exits
+                          }
 
     drift_functions.append(drift_function)
 
     # Training procedure
     start_time = datetime.datetime.now()
-    for iteration in range(training_iterations):
+    for iteration in range(training_generations):
         current_time = datetime.datetime.now()
         elapsed_time = current_time - start_time
         if elapsed_time.total_seconds() > training_time_limit:
@@ -138,26 +153,15 @@ def train_maze_simulation(
         if print_progress:
             print('Training generation {}...'.format(generation))
 
-        timestep = min(time_limit / steps, min_step_size)
+        timestep = min(time_limit / steps, max_step_size)
 
-        running_period = int(np.ceil(running_time / timestep))
-
-        results = train_next_generation(drift_function=drift_function,
-                                        obstacles=obstacles,
-                                        exits=exits,
-                                        x_mesh=x_mesh,
-                                        y_mesh=y_mesh,
-                                        start_point=start_point,
-                                        time_limit=time_limit,
-                                        timestep=timestep,
-                                        simulations=simulations,
-                                        print_progress=print_progress,
-                                        diffusion=diffusion,
-                                        speed_limit=speed_limit,
-                                        rolling_speed_period=rolling_speed_period,
-                                        memory_retention=memory_retention,
-                                        running_period=running_period,
-                                        collision_penalty=collision_penalty)
+        results = train_next_generation(obstacles=obstacles, exits=exits, x_mesh=x_mesh, y_mesh=y_mesh,
+                                        time_limit=time_limit, timestep=timestep, simulations=simulations,
+                                        start_point=start_point, drift_function=drift_function, diffusion=diffusion,
+                                        speed_limit=speed_limit, rolling_speed_period=rolling_speed_period,
+                                        memory_retention=memory_retention, running_period=running_period, running_mode=running_mode,
+                                        collision_penalty=collision_penalty,
+                                        print_progress=print_progress)
 
         current_training_data = results['training_data']
         new_drift_function = results['new_drift_function']
