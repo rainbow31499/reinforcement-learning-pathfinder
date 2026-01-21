@@ -1,6 +1,7 @@
 import numpy as np
 import datetime
 from brownian_motion_obstacle_course import brownian_motion_obstacle_course
+import pickle
 
 
 def train_next_generation(
@@ -8,21 +9,31 @@ def train_next_generation(
         # Environmental parameters:
         obstacles, exits, x_mesh, y_mesh,
         # Time parameters:
-        time_limit, timestep, simulations,
+        time_limit, timestep,
         # Motion parameters:
         start_point, drift_function, diffusion=1, speed_limit=np.inf, rolling_speed_period=1,
         # Drift function training parameters:
         # mode: `'time'` gives running averages over time, `'steps'` gives running averages over steps
-        memory_retention=0.8, running_period=1, running_mode="time",
+        simulations=100, memory_retention=0.8, running_period=1, running_mode="time",
         collision_penalty=0,
         # UI settings:
         print_progress=True):
     """Train a Brownian motion by running simulations from an initial set of simulation parameters fed into the `brownian_motion_obstacle_course` function to collect training data from a given number of `simulations`. Training parameters include `memory_retention` to show what percentage of previous drift function is retained. Parameter `running_period` describes smoothing of trajectories in training data used to average over this period to train drift functions. Collisions penalized by `collision_penalty` parameter to introduce dividing (1 + `collision_penalty` * `number_of_collisions`) from orginal training score."""
+
+    # Initialize result
+
+    result = {'time_limit': time_limit,
+              'timestep': timestep,
+              'start_point': start_point,
+              'drift_function_id': drift_function['id'],
+              'diffusion': diffusion,
+              'speed_limit': speed_limit}
+
+    result['training_data'] = []
+
     # Step 1: Run simulations to collect training data
 
     generation = drift_function['generation']
-
-    training_data = []
 
     for i in range(simulations):
         if print_progress:
@@ -36,14 +47,14 @@ def train_next_generation(
 
         data_point['generation'] = generation
 
-        training_data.append(data_point)
+        result['training_data'].append(data_point)
 
     # Step 2: Train drift function based on training data
 
     drift_totals = drift_function['totals'] * memory_retention
     drift_weights = drift_function['weights'] * memory_retention
 
-    for data_point in training_data:
+    for data_point in result['training_data']:
         if data_point['success'] == False:
             weight = 0
         else:
@@ -78,18 +89,18 @@ def train_next_generation(
                 drift[x_index, y_index, :] = drift_totals[x_index,
                                                           y_index, :] / drift_weights[x_index, y_index]
 
-    new_drift_function = {'totals': drift_totals,
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    new_drift_function = {'id': 'gen_{:03d}_{}'.format(0, timestamp),
+                          'generation': generation + 1,
+                          'timestamp': datetime.datetime.now(),
+                          'totals': drift_totals,
                           'weights': drift_weights,
                           'drift_value': drift,
                           'x_mesh': x_mesh,
                           'y_mesh': y_mesh,
-                          'generation': generation + 1,
-                          'timestamp': datetime.datetime.now().strftime('%Y%m%d_%H%M%S'),
-                          'obstacles': obstacles,
-                          'exits': exits
                           }
 
-    return {"training_data": training_data, "new_drift_function": new_drift_function}
+    return result, new_drift_function
 
 
 def train_maze_simulation(
@@ -112,12 +123,15 @@ def train_maze_simulation(
         # Training limits:
         training_generations=100, training_time_limit=3600, simulations=100,
         # UI Settings:
-        print_progress=True):
-    """Implement the full training process for a single obstacle course with initial parameters. Run a given number of `simulations` up to a number of `training_generations`, until all generations are used or `training_time_limit` (in seconds) is reached. Goal is to achieve a `target_success_rate` of all trajectories under a `target_time`, at which training stops. In training, monitor success rates of current training generation: if `level_up_success_rate` of all trajectories fall within current time limit, level up to reduce time limit according to `new_time_fraction` quartile. If less than `level_down_success_rate` of trajectories fall within time limit, level down by multiplying time limit by `level_down_time_multiplier`. Other parameters are same as in `train_next_generation` function. UPCOMING: Data also includes a log of events."""
+        print_progress=True, save_data=True):
+    """Implement the full training process for a single obstacle course with initial parameters. Run a given number of `simulations` up to a number of `training_generations`, until all generations are used or `training_time_limit` (in seconds) is reached. Goal is to achieve a `target_success_rate` of all trajectories under a `target_time`, at which training stops. In training, monitor success rates of current training generation: if `level_up_success_rate` of all trajectories fall within current time limit, level up to reduce time limit according to `new_time_fraction` quartile. If less than `level_down_success_rate` of trajectories fall within time limit, level down by multiplying time limit by `level_down_time_multiplier`. Other parameters are same as in `train_next_generation` function. Data also includes a log of events."""
 
     # Initialize data
-    drift_functions = []
-    training_data = []
+    result = {'obstacles': obstacles,
+              'exits': exits}
+    result['generations'] = []
+    result['drift_functions'] = []
+    result['log'] = []
 
     # First drift function
     if drift_function == None:
@@ -125,18 +139,18 @@ def train_maze_simulation(
         drift_weights_zero = np.zeros((len(x_mesh), len(y_mesh)))
         drift_zero = np.zeros((len(x_mesh), len(y_mesh), 2))
 
-        drift_function = {'totals': drift_totals_zero,
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        drift_function = {'id': 'gen_{:03d}_{}'.format(0, timestamp),
+                          'generation': 0,
+                          'timestamp': datetime.datetime.now(),
+                          'totals': drift_totals_zero,
                           'weights': drift_weights_zero,
                           'drift_value': drift_zero,
                           'x_mesh': x_mesh,
-                          'y_mesh': y_mesh,
-                          'generation': 0,
-                          'timestamp': datetime.datetime.now().strftime('%Y%m%d_%H%M%S'),
-                          'obstacles': obstacles,
-                          'exits': exits
+                          'y_mesh': y_mesh
                           }
 
-    drift_functions.append(drift_function)
+    result['drift_functions'].append(drift_function)
 
     # Training procedure
     start_time = datetime.datetime.now()
@@ -155,32 +169,23 @@ def train_maze_simulation(
 
         timestep = min(time_limit / steps, max_step_size)
 
-        results = train_next_generation(obstacles=obstacles, exits=exits, x_mesh=x_mesh, y_mesh=y_mesh,
-                                        time_limit=time_limit, timestep=timestep, simulations=simulations,
-                                        start_point=start_point, drift_function=drift_function, diffusion=diffusion,
-                                        speed_limit=speed_limit, rolling_speed_period=rolling_speed_period,
-                                        memory_retention=memory_retention, running_period=running_period, running_mode=running_mode,
-                                        collision_penalty=collision_penalty,
-                                        print_progress=print_progress)
+        training = train_next_generation(obstacles=obstacles, exits=exits, x_mesh=x_mesh, y_mesh=y_mesh,
+                                         time_limit=time_limit, timestep=timestep, simulations=simulations,
+                                         start_point=start_point, drift_function=drift_function, diffusion=diffusion,
+                                         speed_limit=speed_limit, rolling_speed_period=rolling_speed_period,
+                                         memory_retention=memory_retention, running_period=running_period, running_mode=running_mode,
+                                         collision_penalty=collision_penalty,
+                                         print_progress=print_progress)
 
-        current_training_data = results['training_data']
-        new_drift_function = results['new_drift_function']
+        training_result = training[0]
 
-        under_target_time = 0
-        for data_point in current_training_data:
-            if data_point['success'] == True and data_point['time_taken'] <= target_time:
-                under_target_time += 1
-
-        if under_target_time / simulations >= target_success_rate:
-            # Stop training when target is achieved
-            if print_progress:
-                print('Target achieved. Training stopped.')
-            break
+        current_training_data = training_result['training_data']
+        new_drift_function = training[1]
 
         # Save the data for records
 
-        drift_functions.append(new_drift_function)
-        training_data.extend(current_training_data)
+        result['generations'].append(training_result)
+        result['drift_functions'].append(new_drift_function)
 
         # Set new parameters for next generation based on analysis of training data
 
@@ -196,23 +201,54 @@ def train_maze_simulation(
 
         average_time = np.mean([time for time in times if time != np.inf])
         success_rate = successes / len(current_training_data)
+        message = 'Generation {}: Success rate {}. Average time: {:.2f}'.format(
+            generation, success_rate, average_time)
+        result['log'].append(
+            {'time': datetime.datetime.now(), 'message': message})
         if print_progress:
-            print('Generation {}: Success rate {}. Average time: {:.2f}'.format(
-                generation, success_rate, average_time))
+            print(message)
+
+        under_target_time = 0
+        for data_point in current_training_data:
+            if data_point['success'] == True and data_point['time_taken'] <= target_time:
+                under_target_time += 1
+
+        if under_target_time / simulations >= target_success_rate:
+            # Stop training when target is achieved
+            if print_progress:
+                print('Target achieved. Training stopped.')
+            break
 
         if success_rate >= level_up_success_rate:
             time_limit = np.quantile(times, new_time_fraction)
+            message = 'Level up. New time limit decreased to {} to reinforce better times'.format(
+                int(time_limit))
+            result['log'].append(
+                {'time': datetime.datetime.now(), 'message': message})
             if print_progress:
-                print('Level up. New time limit decreased to {} to reinforce better times'.format(
-                    int(time_limit)))
+                print(message)
 
         if success_rate <= level_down_success_rate:
             time_limit *= level_down_time_multiplier
+            message = 'Level down. New time limit increased to {} to allow more successes'.format(
+                int(time_limit))
+            result['log'].append(
+                {'time': datetime.datetime.now(), 'message': message})
             if print_progress:
-                print('Level down. New time limit increased to {} to allow more successes'.format(
-                    int(time_limit)))
+                print(message)
 
-    print('Training complete.')
+    message = 'Training complete.'
+    result['log'].append({'time': datetime.datetime.now(), 'message': message})
+    if print_progress:
+        print(message)
 
-    return {'drift_functions': drift_functions,
-            'training_data': training_data}
+    if save_data:
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        filename = 'training_sample_{}.pkl'.format(timestamp)
+
+        with open(filename, 'wb') as f:
+            pickle.dump(result, f)
+            f.close()
+
+    return result

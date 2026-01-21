@@ -54,7 +54,10 @@ def brownian_motion_obstacle_course(
                     success = True
                     time_taken = time
         position = candidate_position
-    return {'path': path, 'success': success, 'time_taken': time_taken, 'collisions': collisions}
+    return {'path': path,
+            'success': success,
+            'time_taken': time_taken,
+            'collisions': collisions}
 
 
 """
